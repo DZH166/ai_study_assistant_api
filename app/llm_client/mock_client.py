@@ -46,6 +46,39 @@ def build_mock_study_note_extract_answer(latest_user_message: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def build_mock_repair_answer(latest_user_message: str) -> str:
+    """
+    为 repair 场景返回合法 JSON。
+
+    真实模型会根据坏输出和错误原因修复；mock 只需要模拟“修复后可通过校验”的结果。
+    """
+    result = {
+        "core_concepts": [
+            "模型输出修复用于处理结构化输出不稳定问题",
+            "解析失败和校验失败需要被后端区分和兜底",
+        ],
+        "weak_points": [
+            "容易把 repair 理解成重新生成业务答案",
+        ],
+        "review_suggestions": [
+            "记住 repair 的目标是修格式，不是重新自由总结",
+        ],
+        "quiz_questions": [
+            {
+                "question": "为什么结构化输出失败后不能直接返回原始结果？",
+                "reference_answer": "因为原始结果不稳定，前端和后端都难以继续处理。",
+            }
+        ],
+        "interview_questions": [
+            {
+                "question": "你如何处理大模型没有按 JSON 格式返回的情况？",
+                "answer_hint": "先解析和校验，失败后用 repair prompt 有限重试，仍失败则返回统一错误。",
+            }
+        ],
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
 def call_mock_llm(
     messages: list[ChatMessage],
     temperature: float,
@@ -64,7 +97,9 @@ def call_mock_llm(
     latest_user_message = messages[-1].content
     system_prompt = messages[0].content if messages else ""
 
-    if "STUDY_NOTE_EXTRACTOR" in system_prompt:
+    if "JSON 输出修复器" in system_prompt:
+        answer = build_mock_repair_answer(latest_user_message)
+    elif "STUDY_NOTE_EXTRACTOR" in system_prompt:
         answer = build_mock_study_note_extract_answer(latest_user_message)
     else:
         answer = (

@@ -50,4 +50,6 @@ class StudyNoteExtractResponse(BaseModel):
     extraction: StudyNoteExtractData
     model: str
     usage: dict
+    repaired: bool = Field(default=False, description="本次结果是否经过自动修复")
+    repair_reason: str | None = Field(default=None, description="触发自动修复的原因")
     raw_answer: str | None = Field(default=None, description="调试用原始模型输出，正式生产可关闭")
