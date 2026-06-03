@@ -3,20 +3,21 @@
 from fastapi import FastAPI
 
 from app.core.config import get_settings
-from app.routers import chat
+from app.routers import chat, extract
 from app.utils.response import success_response
 
 
 app = FastAPI(
-    title="Module16 Configurable Chat API",
-    description="在 /chat 项目中加入 .env、环境变量和模型配置管理。",
-    version="1.1.0",
+    title="AI Study Assistant API",
+    description="AI 学习陪跑助手后端，支持聊天、Prompt 场景和学习笔记结构化提取。",
+    version="1.2.0",
 )
 
 
 # 把 chat.py 里的接口统一挂到主应用上。
 # main.py 是主应用入口，不应该堆业务细节。
 app.include_router(chat.router)
+app.include_router(extract.router)
 
 
 @app.get("/")
@@ -27,6 +28,7 @@ def read_root():
         data={
             "docs": "访问 /docs 查看接口文档",
             "chat_api": "POST /chat",
+            "extract_api": "POST /extract/study-note",
             "config": settings.safe_dict(),
         },
     )

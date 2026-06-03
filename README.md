@@ -175,3 +175,56 @@ app/prompts/chat_prompts.py
 ```text
 我把 Prompt 从业务 service 中拆成独立 prompts 层，并通过 prompt_scene 支持学习助手、总结助手和面试助手等多场景切换。这样可以避免 Prompt 和业务流程耦合，后续扩展 RAG Prompt、结构化输出 Prompt 或 Agent Prompt 时，只需要扩展 Prompt 模板层。
 ```
+
+## 学习笔记结构化提取
+
+Module21 新增了结构化输出能力。接口不再让 AI 返回一段普通文本，而是把学习笔记提取成后端可继续处理的固定字段。
+
+接口：
+
+```text
+POST /extract/study-note
+```
+
+请求示例：
+
+```json
+{
+  "note": "今天学习了 Prompt 工程化。Prompt 不应该直接写死在 service 里，因为它是高频变化的业务资产。service 更适合负责业务流程，prompts 层负责管理不同场景的 system prompt。",
+  "temperature": 0.2
+}
+```
+
+响应中的 `data.extraction` 会包含：
+
+| 字段 | 含义 |
+|---|---|
+| `core_concepts` | 核心知识点 |
+| `weak_points` | 薄弱点 |
+| `review_suggestions` | 复习建议 |
+| `quiz_questions` | 知识点抽问题 |
+| `interview_questions` | 面试题 |
+
+工程链路：
+
+```text
+router 接收请求
+-> schema 校验 note / temperature
+-> service 组装结构化提取 Prompt
+-> llm_client 调用 mock 或真实模型
+-> output_parser 解析 JSON
+-> Pydantic 校验输出结构
+-> router 返回统一响应
+```
+
+工程意义：
+
+1. 普通文本适合人看，但不适合后端继续处理。
+2. 结构化输出可以继续用于前端展示、复习文档生成、知识卡片、数据库存储和后续统计。
+3. Prompt 只能要求模型输出 JSON，后端还必须用解析器和 Pydantic 做结构校验。
+
+面试表达：
+
+```text
+我在 AI 学习助手项目中实现了学习笔记结构化提取接口。用户输入一段学习笔记后，后端通过 Prompt 约束模型输出固定 JSON，再用 output_parser 解析成 Python dict，并用 Pydantic 校验字段结构，最终返回核心知识点、薄弱点、复习建议、抽问题和面试题。这样模型输出不再只是展示文本，而是可以继续被系统处理的数据。
+```
