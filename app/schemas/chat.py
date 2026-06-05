@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -14,8 +15,34 @@ class ChatMessage(BaseModel):
     - user：用户输入
     - assistant：模型历史回答
     """
-    role: str
+    role: Literal["system", "user", "assistant"]
     content: str
+
+
+class MessageItem(BaseModel):
+    """
+    后端保存的一条历史消息。
+
+    和 ChatMessage 的区别：
+    - ChatMessage 是发给大模型的消息格式
+    - MessageItem 是后端会话存储里的消息记录
+    """
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1)
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+
+class Conversation(BaseModel):
+    """
+    一场完整对话。
+
+    Module23 先用内存保存它，Module25 再升级成文件或数据库持久化。
+    """
+    conversation_id: str
+    mode: Literal["study", "interview", "summary"] = "study"
+    messages: list[MessageItem] = Field(default_factory=list)
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
 class ChatRequest(BaseModel):
@@ -25,14 +52,44 @@ class ChatRequest(BaseModel):
     这不是模型最终需要的格式，而是前端调用后端时提交的业务数据。
     后端会在 service 层把它转换成大模型需要的 messages。
     """
-    question: str = Field(..., min_length=1, description="用户当前问题")
+    message: str | None = Field(default=None, min_length=1, description="用户当前消息，Module23 新字段")
+    question: str | None = Field(default=None, min_length=1, description="用户当前问题，兼容旧字段")
     conversation_id: str | None = Field(default=None, description="会话编号，首次对话可以为空")
     history: list[ChatMessage] = Field(default_factory=list, description="历史消息，用于多轮对话")
     temperature: float = Field(default=0.3, ge=0, le=2, description="模型发散程度")
-    prompt_scene: Literal["learning_assistant", "interview_assistant", "summary_assistant"] = Field(
-        default="learning_assistant",
+    mode: Literal["study", "interview", "summary"] = Field(
+        default="study",
+        description="聊天模式，Module23 新字段",
+    )
+    prompt_scene: Literal["learning_assistant", "interview_assistant", "summary_assistant"] | None = Field(
+        default=None,
         description="Prompt 场景，决定当前 /chat 使用哪种 system prompt",
     )
+
+    def current_message(self) -> str:
+        """
+        返回当前用户输入。
+
+        新接口优先用 message，旧接口兼容 question。
+        """
+        if self.message:
+            return self.message
+        if self.question:
+            return self.question
+        raise ValueError("message 不能为空")
+
+    def current_prompt_scene(self) -> Literal["learning_assistant", "interview_assistant", "summary_assistant"]:
+        """
+        把业务 mode 转换成已有的 prompt_scene。
+        """
+        if self.prompt_scene:
+            return self.prompt_scene
+        mode_to_scene = {
+            "study": "learning_assistant",
+            "interview": "interview_assistant",
+            "summary": "summary_assistant",
+        }
+        return mode_to_scene[self.mode]  # type: ignore[return-value]
 
 
 class ChatResponse(BaseModel):
@@ -46,5 +103,7 @@ class ChatResponse(BaseModel):
     model: str
     usage: dict
     messages_count: int
+    history_rounds: int = Field(default=0, description="当前会话已保存的轮数")
+    stored_messages_count: int = Field(default=0, description="当前会话已保存的消息条数")
     fallback_used: bool = False
     fallback_reason: str | None = None

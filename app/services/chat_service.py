@@ -1,24 +1,32 @@
 # -*- coding: utf-8 -*-
 
-from uuid import uuid4
-
+from app.data.conversation_store import (
+    ConversationNotFoundError,
+    append_message,
+    count_messages,
+    count_rounds,
+    create_conversation,
+    get_recent_history,
+)
 from app.llm_client.client_factory import call_llm
+from app.llm_client.llm_error_handler import LLMClientError
 from app.prompts.chat_prompts import build_system_prompt
-from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, MessageItem
 
 
-def create_conversation_id() -> str:
+def convert_history_to_chat_messages(history: list[MessageItem]) -> list[ChatMessage]:
     """
-    创建会话编号。
+    把后端存储的历史消息转换成大模型需要的 messages 格式。
 
-    工程意义：
-    前端第一次聊天时可以不传 conversation_id，
-    后端生成一个编号返回，下一轮对话继续带回来。
+    存储层只保存 user/assistant，system prompt 每次临时拼接。
     """
-    return f"conv_{uuid4().hex[:8]}"
+    return [
+        ChatMessage(role=message.role, content=message.content)
+        for message in history
+    ]
 
 
-def build_messages(request: ChatRequest) -> list[ChatMessage]:
+def build_messages(request: ChatRequest, history: list[MessageItem]) -> list[ChatMessage]:
     """
     把接口请求体转换成大模型需要的 messages。
 
@@ -27,11 +35,35 @@ def build_messages(request: ChatRequest) -> list[ChatMessage]:
     2. history：再给历史上下文
     3. user：最后放当前问题，让模型回答最新输入
     """
-    system_prompt = build_system_prompt(request.prompt_scene)
+    system_prompt = build_system_prompt(request.current_prompt_scene())
     system_message = ChatMessage(role="system", content=system_prompt)
-    user_message = ChatMessage(role="user", content=request.question)
+    history_messages = convert_history_to_chat_messages(history)
+    user_message = ChatMessage(role="user", content=request.current_message())
 
-    return [system_message] + request.history + [user_message]
+    return [system_message] + history_messages + [user_message]
+
+
+def prepare_conversation(request: ChatRequest) -> tuple[str, list[MessageItem]]:
+    """
+    准备会话编号和最近历史。
+
+    第一次请求：创建 conversation_id，历史为空。
+    后续请求：根据 conversation_id 读取最近 N 轮历史。
+    """
+    if request.conversation_id:
+        try:
+            history = get_recent_history(request.conversation_id)
+        except ConversationNotFoundError as exc:
+            raise LLMClientError(
+                message="会话不存在，请重新开始一次对话",
+                code="CONVERSATION_NOT_FOUND",
+                status_code=404,
+                detail=str(exc),
+            ) from exc
+        return request.conversation_id, history
+
+    conversation = create_conversation(mode=request.mode)
+    return conversation.conversation_id, []
 
 
 def chat_with_ai(request: ChatRequest) -> ChatResponse:
@@ -41,10 +73,22 @@ def chat_with_ai(request: ChatRequest) -> ChatResponse:
     service 层像导演：它不接 HTTP，不直接关心前端；
     它负责组织 messages、调用模型客户端、整理最终业务结果。
     """
-    messages = build_messages(request)
+    try:
+        current_message = request.current_message()
+    except ValueError as exc:
+        raise LLMClientError(
+            message="用户消息不能为空",
+            code="CHAT_MESSAGE_REQUIRED",
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    conversation_id, history = prepare_conversation(request)
+    messages = build_messages(request, history)
     llm_result = call_llm(messages=messages, temperature=request.temperature)
 
-    conversation_id = request.conversation_id or create_conversation_id()
+    append_message(conversation_id, role="user", content=current_message)
+    append_message(conversation_id, role="assistant", content=llm_result["answer"])
 
     return ChatResponse(
         answer=llm_result["answer"],
@@ -52,6 +96,8 @@ def chat_with_ai(request: ChatRequest) -> ChatResponse:
         model=llm_result["model"],
         usage=llm_result["usage"],
         messages_count=len(messages),
+        history_rounds=count_rounds(conversation_id),
+        stored_messages_count=count_messages(conversation_id),
         fallback_used=llm_result.get("fallback_used", False),
         fallback_reason=llm_result.get("fallback_reason"),
     )
