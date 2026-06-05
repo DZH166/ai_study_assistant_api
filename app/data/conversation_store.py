@@ -58,6 +58,35 @@ def get_recent_history(conversation_id: str, max_rounds: int = MAX_HISTORY_ROUND
     return conversation.messages[-max_messages:]
 
 
+def get_messages_ready_for_summary(
+    conversation_id: str,
+    max_rounds: int = MAX_HISTORY_ROUNDS,
+) -> list[MessageItem]:
+    """
+    读取需要被压缩进 summary_memory 的旧消息。
+
+    最近 N 轮仍保留原文，只压缩更早且尚未压缩过的消息。
+    """
+    conversation = get_conversation(conversation_id)
+    max_recent_messages = max_rounds * 2
+    compress_until = max(0, len(conversation.messages) - max_recent_messages)
+    return conversation.messages[conversation.summarized_messages_count:compress_until]
+
+
+def update_summary_memory(
+    conversation_id: str,
+    summary_memory: str,
+    summarized_messages_count: int,
+) -> None:
+    """
+    更新会话摘要记忆，并记录已经压缩到哪条消息。
+    """
+    conversation = get_conversation(conversation_id)
+    conversation.summary_memory = summary_memory
+    conversation.summarized_messages_count = summarized_messages_count
+    conversation.updated_at = conversation.messages[-1].created_at if conversation.messages else conversation.updated_at
+
+
 def count_rounds(conversation_id: str) -> int:
     """
     统计当前会话已保存多少轮。

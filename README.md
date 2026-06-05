@@ -20,6 +20,7 @@ app/
   routers/chat.py         HTTP 接口层，负责接请求、调 service、返回响应
   schemas/chat.py         请求体和响应体结构，Pydantic 在这里做字段校验
   services/chat_service.py 聊天业务流程，负责组装 messages 并调用模型客户端
+  services/memory_service.py 会话记忆压缩服务，负责生成和包装 summary memory
   llm_client/client_factory.py 统一模型调用入口，根据配置决定使用 mock 还是真实模型
   llm_client/mock_client.py 模拟大模型调用，后续可替换成真实模型 API
   llm_client/openai_compatible_client.py 真实 OpenAI-compatible HTTP 调用客户端
@@ -322,4 +323,63 @@ MAX_HISTORY_ROUNDS = 3
 
 ```text
 我把聊天接口从单次问答升级成了后端管理上下文的多轮对话接口。第一次请求时后端创建 conversation_id，并在模型回答成功后保存 user 和 assistant 消息；后续请求只需要带 conversation_id，后端会读取最近几轮历史，组装成 system + recent_history + current_user 后再调用模型。同时我限制了历史窗口大小，避免上下文无限增长，为后续摘要记忆、长期记忆和 Agent 状态管理打基础。
+```
+
+## 会话记忆压缩
+
+Module24 新增了 `summary memory`。Module23 解决的是“后端能保存并读取多轮历史”，Module24 解决的是“历史变长后，不能只靠最近几轮，也不能把全部历史都塞给模型”。
+
+当前策略：
+
+```text
+较早历史 -> 压缩成 summary_memory
+最近 3 轮 -> 保留原文
+当前问题 -> 放在最后
+```
+
+最终发给大模型的 messages 顺序：
+
+```text
+system
+summary_memory
+recent_history
+current_user
+```
+
+为什么要这样做：
+
+1. 完整历史会让 token 成本和响应时间持续增长。
+2. 只保留最近几轮可能丢失长期学习目标、薄弱点和任务状态。
+3. 摘要记忆能保留长期主线，最近历史能保留当前语境。
+4. 这是后续 RAG 记忆、Agent 状态管理和长期学习记录的基础。
+
+核心文件：
+
+| 文件 | 职责 |
+|---|---|
+| `app/services/memory_service.py` | 判断哪些旧消息需要压缩，调用模型生成 summary memory，并包装成可放入 messages 的 system 消息 |
+| `app/data/conversation_store.py` | 保存 `summary_memory` 和 `summarized_messages_count`，避免重复压缩同一批消息 |
+| `app/services/chat_service.py` | 在聊天主流程中刷新摘要记忆，并按 `system + summary + recent + user` 组装上下文 |
+
+响应中新增记忆状态字段：
+
+| 字段 | 含义 |
+|---|---|
+| `memory_summary` | 当前会话已生成的摘要记忆 |
+| `memory_summary_used` | 本次调用是否把摘要记忆放入 messages |
+| `memory_summary_updated` | 本次调用是否更新了摘要记忆 |
+| `memory_summary_failed` | 本次是否尝试更新摘要但失败 |
+| `memory_summary_error` | 摘要失败的错误原因 |
+
+摘要压缩不是无损的。它会保留主线、目标、关键知识点、薄弱点和任务状态，但可能丢失原始措辞、细节顺序、语气和一些低频上下文。所以当前策略不是“只用摘要”，而是：
+
+```text
+摘要记忆负责长期主线
+最近 3 轮负责当前语境
+```
+
+面试表达：
+
+```text
+我在多轮聊天接口中加入了 summary memory 机制。当会话历史超过最近 3 轮窗口后，后端会把更早且尚未压缩的 user/assistant 消息压缩成摘要记忆，并记录 summarized_messages_count，避免重复压缩同一批历史。后续调用模型时，messages 会按 system + summary_memory + recent_history + current_user 组装。这样既控制了上下文长度和 token 成本，又尽量保留长期学习目标、薄弱点和任务状态，为后续 RAG 记忆和 Agent 状态管理打基础。
 ```

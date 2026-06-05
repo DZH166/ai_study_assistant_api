@@ -12,6 +12,11 @@ from app.llm_client.client_factory import call_llm
 from app.llm_client.llm_error_handler import LLMClientError
 from app.prompts.chat_prompts import build_system_prompt
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, MessageItem
+from app.services.memory_service import (
+    MemorySummaryResult,
+    build_summary_memory_message,
+    refresh_summary_memory,
+)
 
 
 def convert_history_to_chat_messages(history: list[MessageItem]) -> list[ChatMessage]:
@@ -26,21 +31,31 @@ def convert_history_to_chat_messages(history: list[MessageItem]) -> list[ChatMes
     ]
 
 
-def build_messages(request: ChatRequest, history: list[MessageItem]) -> list[ChatMessage]:
+def build_messages(
+    request: ChatRequest,
+    history: list[MessageItem],
+    memory_summary_result: MemorySummaryResult,
+) -> list[ChatMessage]:
     """
     把接口请求体转换成大模型需要的 messages。
 
     顺序非常重要：
     1. system：先给模型长期规则
-    2. history：再给历史上下文
-    3. user：最后放当前问题，让模型回答最新输入
+    2. summary_memory：再给较早历史的压缩记忆
+    3. history：再给最近几轮原文上下文
+    4. user：最后放当前问题，让模型回答最新输入
     """
     system_prompt = build_system_prompt(request.current_prompt_scene())
     system_message = ChatMessage(role="system", content=system_prompt)
+    summary_messages = (
+        [build_summary_memory_message(memory_summary_result.summary_memory)]
+        if memory_summary_result.summary_memory
+        else []
+    )
     history_messages = convert_history_to_chat_messages(history)
     user_message = ChatMessage(role="user", content=request.current_message())
 
-    return [system_message] + history_messages + [user_message]
+    return [system_message] + summary_messages + history_messages + [user_message]
 
 
 def prepare_conversation(request: ChatRequest) -> tuple[str, list[MessageItem]]:
@@ -84,7 +99,12 @@ def chat_with_ai(request: ChatRequest) -> ChatResponse:
         ) from exc
 
     conversation_id, history = prepare_conversation(request)
-    messages = build_messages(request, history)
+    memory_summary_result = refresh_summary_memory(conversation_id)
+    messages = build_messages(
+        request=request,
+        history=history,
+        memory_summary_result=memory_summary_result,
+    )
     llm_result = call_llm(messages=messages, temperature=request.temperature)
 
     append_message(conversation_id, role="user", content=current_message)
@@ -98,6 +118,11 @@ def chat_with_ai(request: ChatRequest) -> ChatResponse:
         messages_count=len(messages),
         history_rounds=count_rounds(conversation_id),
         stored_messages_count=count_messages(conversation_id),
+        memory_summary=memory_summary_result.summary_memory,
+        memory_summary_used=memory_summary_result.used,
+        memory_summary_updated=memory_summary_result.updated,
+        memory_summary_failed=memory_summary_result.failed,
+        memory_summary_error=memory_summary_result.error,
         fallback_used=llm_result.get("fallback_used", False),
         fallback_reason=llm_result.get("fallback_reason"),
     )

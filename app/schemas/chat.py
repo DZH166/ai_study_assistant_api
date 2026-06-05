@@ -41,6 +41,8 @@ class Conversation(BaseModel):
     conversation_id: str
     mode: Literal["study", "interview", "summary"] = "study"
     messages: list[MessageItem] = Field(default_factory=list)
+    summary_memory: str | None = Field(default=None, description="较早对话压缩后的摘要记忆")
+    summarized_messages_count: int = Field(default=0, description="已经被压缩进摘要记忆的消息数量")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -105,5 +107,10 @@ class ChatResponse(BaseModel):
     messages_count: int
     history_rounds: int = Field(default=0, description="当前会话已保存的轮数")
     stored_messages_count: int = Field(default=0, description="当前会话已保存的消息条数")
+    memory_summary: str | None = Field(default=None, description="当前会话的摘要记忆")
+    memory_summary_used: bool = Field(default=False, description="本次调用是否把摘要记忆放入 messages")
+    memory_summary_updated: bool = Field(default=False, description="本次调用是否更新了摘要记忆")
+    memory_summary_failed: bool = Field(default=False, description="本次调用是否尝试更新摘要但失败")
+    memory_summary_error: str | None = Field(default=None, description="摘要记忆更新失败原因")
     fallback_used: bool = False
     fallback_reason: str | None = None

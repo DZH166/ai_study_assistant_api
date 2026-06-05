@@ -79,6 +79,20 @@ def build_mock_repair_answer(latest_user_message: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def build_mock_memory_summary_answer(latest_user_message: str) -> str:
+    """
+    为会话记忆压缩场景返回稳定摘要。
+
+    mock 不负责真正理解全部历史，只负责让 Module24 的压缩链路可测试。
+    """
+    return (
+        "用户正在学习 AI 应用开发，当前主线是把聊天接口升级成具备上下文能力的学习助手。"
+        "此前已讨论过 router/schema/service/llm_client 分层、messages 组装、多轮对话和 conversation_id。"
+        "用户容易在代码阅读时把数据结构、业务流程和模型适配层联系不起来，后续回答应继续强调执行链路、职责边界和工程化原因。"
+        f"本次压缩依据：{latest_user_message[:120]}"
+    )
+
+
 def call_mock_llm(
     messages: list[ChatMessage],
     temperature: float,
@@ -99,6 +113,8 @@ def call_mock_llm(
 
     if "JSON 输出修复器" in system_prompt:
         answer = build_mock_repair_answer(latest_user_message)
+    elif "MEMORY_SUMMARIZER" in system_prompt:
+        answer = build_mock_memory_summary_answer(latest_user_message)
     elif "STUDY_NOTE_EXTRACTOR" in system_prompt:
         answer = build_mock_study_note_extract_answer(latest_user_message)
     else:
