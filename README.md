@@ -383,3 +383,56 @@ current_user
 ```text
 我在多轮聊天接口中加入了 summary memory 机制。当会话历史超过最近 3 轮窗口后，后端会把更早且尚未压缩的 user/assistant 消息压缩成摘要记忆，并记录 summarized_messages_count，避免重复压缩同一批历史。后续调用模型时，messages 会按 system + summary_memory + recent_history + current_user 组装。这样既控制了上下文长度和 token 成本，又尽量保留长期学习目标、薄弱点和任务状态，为后续 RAG 记忆和 Agent 状态管理打基础。
 ```
+
+## Module25：会话持久化
+
+Module25 解决的是“服务重启后会话丢失”的问题。Module23 和 Module24 都已经让后端具备了多轮历史和摘要记忆能力，但它们默认保存在 Python 进程的内存对象里。只要服务停止、电脑关机、进程重启，内存里的 `_CONVERSATIONS` 就会清空。
+
+本模块先使用 JSON 文件做轻量持久化，不直接上数据库。这样做的目的不是说 JSON 比数据库更专业，而是先把“持久化的本质”学清楚：
+
+```text
+内存对象 -> 序列化 -> JSON 文件
+JSON 文件 -> 反序列化 -> 内存对象
+```
+
+保存内容包括：
+
+| 字段 | 为什么必须保存 |
+|---|---|
+| `conversation_id` | 让前端下次还能继续找到同一段会话 |
+| `messages` | 原始 user/assistant 历史，是最重要的原始数据 |
+| `summary_memory` | Module24 生成的摘要记忆，避免重启后丢失长期主线 |
+| `summarized_messages_count` | 记录已经压缩到哪里，避免重复压缩旧消息 |
+| `created_at/updated_at` | 用于后续排序、排查和会话管理 |
+
+核心文件：
+
+| 文件 | 职责 |
+|---|---|
+| `app/data/conversation_file_store.py` | 负责 Conversation 对象和 JSON 文件之间的序列化、反序列化、保存、读取 |
+| `app/data/conversation_store.py` | 仍然作为会话仓库入口，先查内存，内存没有再从 JSON 文件恢复 |
+| `app/storage/conversations/` | 保存运行时会话 JSON 文件，真实数据被 `.gitignore` 忽略 |
+
+调用行为：
+
+```text
+创建会话 -> 写入内存 -> 保存 JSON
+追加 user 消息 -> 更新内存 -> 保存 JSON
+追加 assistant 消息 -> 更新内存 -> 保存 JSON
+更新 summary_memory -> 更新内存 -> 保存 JSON
+服务重启后再次传 conversation_id -> 内存没有 -> 从 JSON 恢复
+```
+
+为什么不只保存 `summary_memory`：
+
+```text
+summary_memory 是加工后的摘要，不是原始数据。
+messages 是原始对话记录。
+原始数据可以重新生成摘要，但摘要不能完整还原原始对话。
+```
+
+面试表达：
+
+```text
+我在多轮聊天项目中加入了轻量级会话持久化。之前会话历史和 summary memory 都保存在 Python 进程内存里，服务重启后会丢失。现在我把 Conversation 对象序列化成 JSON 文件保存，并在内存找不到 conversation_id 时从文件反序列化恢复。这样既保留了 Module23 的多轮历史，也保留了 Module24 的摘要记忆状态。这个版本先用 JSON 理解持久化本质，后续可以平滑替换成 SQLite、MySQL 或 PostgreSQL。
+```

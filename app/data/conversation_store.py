@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from app.data.conversation_file_store import load_conversation, save_conversation
 from app.schemas.chat import Conversation, MessageItem
 
 
@@ -25,6 +26,7 @@ def create_conversation(mode: str) -> Conversation:
     conversation_id = f"conv_{uuid4().hex[:8]}"
     conversation = Conversation(conversation_id=conversation_id, mode=mode)
     _CONVERSATIONS[conversation_id] = conversation
+    save_conversation(conversation)
     return conversation
 
 
@@ -34,7 +36,11 @@ def get_conversation(conversation_id: str) -> Conversation:
     """
     conversation = _CONVERSATIONS.get(conversation_id)
     if conversation is None:
-        raise ConversationNotFoundError(f"会话不存在：{conversation_id}")
+        try:
+            conversation = load_conversation(conversation_id)
+        except FileNotFoundError as exc:
+            raise ConversationNotFoundError(f"会话不存在：{conversation_id}") from exc
+        _CONVERSATIONS[conversation_id] = conversation
     return conversation
 
 
@@ -45,6 +51,7 @@ def append_message(conversation_id: str, role: str, content: str) -> None:
     conversation = get_conversation(conversation_id)
     conversation.messages.append(MessageItem(role=role, content=content))  # type: ignore[arg-type]
     conversation.updated_at = conversation.messages[-1].created_at
+    save_conversation(conversation)
 
 
 def get_recent_history(conversation_id: str, max_rounds: int = MAX_HISTORY_ROUNDS) -> list[MessageItem]:
@@ -85,6 +92,7 @@ def update_summary_memory(
     conversation.summary_memory = summary_memory
     conversation.summarized_messages_count = summarized_messages_count
     conversation.updated_at = conversation.messages[-1].created_at if conversation.messages else conversation.updated_at
+    save_conversation(conversation)
 
 
 def count_rounds(conversation_id: str) -> int:
