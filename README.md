@@ -436,3 +436,94 @@ messages 是原始对话记录。
 ```text
 我在多轮聊天项目中加入了轻量级会话持久化。之前会话历史和 summary memory 都保存在 Python 进程内存里，服务重启后会丢失。现在我把 Conversation 对象序列化成 JSON 文件保存，并在内存找不到 conversation_id 时从文件反序列化恢复。这样既保留了 Module23 的多轮历史，也保留了 Module24 的摘要记忆状态。这个版本先用 JSON 理解持久化本质，后续可以平滑替换成 SQLite、MySQL 或 PostgreSQL。
 ```
+
+## Module26：SSE 流式输出
+
+Module26 新增了 `POST /chat/stream`。它不是替代普通 `/chat`，而是在聊天、长文本讲解、报告生成这类需要等待模型输出的场景下，提供更好的交互体验。
+
+普通 `/chat` 的响应模式是：
+
+```text
+前端发送请求
+-> 后端等待模型完整生成
+-> 一次性返回 JSON
+```
+
+`/chat/stream` 的响应模式是：
+
+```text
+前端发送请求
+-> 后端开始处理
+-> 后端持续推送 start / metadata / chunk / done / error 事件
+-> 前端收到 chunk 就可以逐步显示内容
+```
+
+SSE 的本质是：
+
+```text
+text/event-stream 响应类型 + event/data 事件格式
+```
+
+其中 `yield` 不是 SSE 本身。`yield` 只是 Python 生成器用来分段产出内容的方式；真正让客户端按 SSE 事件流理解响应的，是 `media_type="text/event-stream"` 和下面这种事件格式：
+
+```text
+event: chunk
+data: {"content": "一小段回答"}
+
+```
+
+核心链路：
+
+```text
+service 生产事件 dict
+-> router 转成 SSE 文本
+-> StreamingResponse 带着 text/event-stream 类型持续返回
+-> 前端根据 start/chunk/done/error 判断当前生成状态
+```
+
+核心文件：
+
+| 文件 | 职责 |
+|---|---|
+| `app/routers/chat.py` | 新增 `/chat/stream`，把 service 事件包装成 SSE 文本，并用 `StreamingResponse` 返回 |
+| `app/services/chat_service.py` | 新增 `stream_chat_events()`，复用现有聊天链路并生成 `start/metadata/chunk/done/error` 事件 |
+
+事件含义：
+
+| 事件 | 作用 |
+|---|---|
+| `start` | 告诉前端流已经开始，并返回 `conversation_id`、`messages_count` 等初始化信息 |
+| `metadata` | 返回模型名、usage、fallback 状态等模型调用元信息 |
+| `chunk` | 返回真正的回答片段，前端把 `content` 持续拼接到页面上 |
+| `done` | 告诉前端本次生成正常结束，可以停止 loading、恢复输入框、保存最终状态 |
+| `error` | 告诉前端流式过程中发生错误，避免连接突然断开但前端不知道原因 |
+
+调用示例：
+
+```powershell
+curl.exe -N -X POST "http://127.0.0.1:8000/chat/stream" -H "Content-Type: application/json" -d '{\"message\":\"请用一句话解释SSE\",\"mode\":\"study\",\"temperature\":0.3}'
+```
+
+返回示例：
+
+```text
+event: start
+data: {"conversation_id": "conv_xxxxxxxx", "messages_count": 2, "memory_summary_used": false}
+
+event: metadata
+data: {"conversation_id": "conv_xxxxxxxx", "model": "mock-chat-model-from-env", "usage": {...}}
+
+event: chunk
+data: {"content": "这是 mock 模型回答"}
+
+event: done
+data: {"conversation_id": "conv_xxxxxxxx", "history_rounds": 1, "stored_messages_count": 2}
+```
+
+当前版本使用 mock 模型模拟流式输出：模型先一次性生成完整 `answer`，后端再按固定长度切成多个 `chunk`。真实大模型 streaming 是模型在生成过程中持续返回 token 或文本片段，后端收到一段就转发一段。Module26 的重点是先跑通 SSE 接口设计、事件格式和前端接收方式，后续接入真实 streaming SDK 时替换底层 `llm_client` 即可。
+
+面试表达：
+
+```text
+我在 AI 学习助手项目中新增了 /chat/stream 流式接口。后端通过 FastAPI 的 StreamingResponse 返回 text/event-stream 响应，并把模型生成内容包装成 start、metadata、chunk、done、error 等 SSE 事件持续推送给前端。普通 /chat 继续保留，用于一次性结构化 JSON 返回；/chat/stream 用于长文本生成和聊天场景，前端可以边接收边渲染，提升首字响应速度和用户等待体验。为了保持分层清晰，我让 service 层只生产 event/data 业务事件，router 层再把事件转换成 SSE 文本格式，这样后续即使替换成 WebSocket 或真实模型 streaming，也不会破坏核心业务流程。
+```

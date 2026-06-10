@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+import time
+from collections.abc import Iterator
+
 from app.data.conversation_store import (
     ConversationNotFoundError,
     append_message,
@@ -17,6 +20,10 @@ from app.services.memory_service import (
     build_summary_memory_message,
     refresh_summary_memory,
 )
+
+
+STREAM_CHUNK_SIZE = 12
+STREAM_DELAY_SECONDS = 0.05
 
 
 def convert_history_to_chat_messages(history: list[MessageItem]) -> list[ChatMessage]:
@@ -126,3 +133,96 @@ def chat_with_ai(request: ChatRequest) -> ChatResponse:
         fallback_used=llm_result.get("fallback_used", False),
         fallback_reason=llm_result.get("fallback_reason"),
     )
+
+
+def split_text_for_stream(text: str, chunk_size: int = STREAM_CHUNK_SIZE) -> Iterator[str]:
+    """
+    把完整文本切成多个小片段，用于模拟流式输出。
+
+    当前 Module26 先把 SSE 接口链路跑通。
+    后续接入真实 streaming SDK 时，这里可以替换成供应商返回的 token 流。
+    """
+    for start in range(0, len(text), chunk_size):
+        yield text[start:start + chunk_size]
+
+
+def stream_chat_events(request: ChatRequest) -> Iterator[dict]:
+    """
+    生成聊天流式事件。
+
+    事件不是最终 HTTP 文本，router 层会把这些 dict 包装成 SSE 格式。
+    """
+    try:
+        current_message = request.current_message()
+        conversation_id, history = prepare_conversation(request)
+        memory_summary_result = refresh_summary_memory(conversation_id)
+        messages = build_messages(
+            request=request,
+            history=history,
+            memory_summary_result=memory_summary_result,
+        )
+
+        yield {
+            "event": "start",
+            "data": {
+                "conversation_id": conversation_id,
+                "messages_count": len(messages),
+                "memory_summary_used": memory_summary_result.used,
+            },
+        }
+
+        llm_result = call_llm(messages=messages, temperature=request.temperature)
+
+        yield {
+            "event": "metadata",
+            "data": {
+                "conversation_id": conversation_id,
+                "model": llm_result["model"],
+                "usage": llm_result["usage"],
+                "fallback_used": llm_result.get("fallback_used", False),
+                "fallback_reason": llm_result.get("fallback_reason"),
+            },
+        }
+
+        for chunk in split_text_for_stream(llm_result["answer"]):
+            yield {
+                "event": "chunk",
+                "data": {"content": chunk},
+            }
+            time.sleep(STREAM_DELAY_SECONDS)
+
+        append_message(conversation_id, role="user", content=current_message)
+        append_message(conversation_id, role="assistant", content=llm_result["answer"])
+
+        yield {
+            "event": "done",
+            "data": {
+                "conversation_id": conversation_id,
+                "history_rounds": count_rounds(conversation_id),
+                "stored_messages_count": count_messages(conversation_id),
+                "memory_summary": memory_summary_result.summary_memory,
+                "memory_summary_updated": memory_summary_result.updated,
+                "memory_summary_failed": memory_summary_result.failed,
+                "memory_summary_error": memory_summary_result.error,
+            },
+        }
+    except LLMClientError as exc:
+        yield {
+            "event": "error",
+            "data": {
+                "message": exc.message,
+                "code": exc.code,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            },
+        }
+    except ValueError as exc:
+        yield {
+            "event": "error",
+            "data": {
+                "message": "用户消息不能为空",
+                "code": "CHAT_MESSAGE_REQUIRED",
+                "status_code": 422,
+                "detail": str(exc),
+            },
+        }
